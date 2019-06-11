@@ -42,6 +42,7 @@
 #include <util/strencodings.h>
 #include <util/system.h>
 #include <util/validation.h>
+#include <utreexo/utreexo.h>
 #include <validationinterface.h>
 #include <warnings.h>
 
@@ -2306,6 +2307,12 @@ bool CChainState::ConnectTip(CValidationState& state, const CChainParams& chainp
     }
     int64_t nTime4 = GetTimeMicros(); nTimeFlush += nTime4 - nTime3;
     LogPrint(BCLog::BENCH, "  - Flush: %.2fms [%.2fs (%.2fms/blk)]\n", (nTime4 - nTime3) * MILLI, nTimeFlush * MICRO, nTimeFlush * MILLI / nBlocksTotal);
+    
+    // Have Utreexo update its state based on the block
+    if(UseUtreexo()) {
+        GlobalUtreexo().ProcessBlock(blockConnecting);
+    }
+    
     // Write the chain state to disk, if necessary.
     if (!FlushStateToDisk(chainparams, state, FlushStateMode::IF_NEEDED))
         return false;

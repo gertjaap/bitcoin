@@ -213,6 +213,9 @@ BITCOIN_CORE_H = \
   util/time.h \
   util/url.h \
   util/validation.h \
+  utreexo/forest.h \
+  utreexo/util.h \
+  utreexo/utreexo.h \
   validation.h \
   validationinterface.h \
   versionbits.h \
@@ -497,7 +500,13 @@ libbitcoin_util_a_SOURCES = \
   util/time.cpp \
   util/url.cpp \
   util/validation.cpp \
+  utreexo/forest.cpp \
+  utreexo/util.cpp \
+  utreexo/utreexo.cpp \
   $(BITCOIN_CORE_H)
+
+
+
 
 if GLIBC_BACK_COMPAT
 libbitcoin_util_a_SOURCES += compat/glibc_compat.cpp

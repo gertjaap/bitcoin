@@ -50,6 +50,7 @@
 #include <util/system.h>
 #include <util/moneystr.h>
 #include <util/validation.h>
+#include <utreexo/utreexo.h>
 #include <validationinterface.h>
 #include <walletinitinterface.h>
 #include <stdint.h>
@@ -208,6 +209,10 @@ void Shutdown(InitInterfaces& interfaces)
     /// module was initialized.
     util::ThreadRename("shutoff");
     mempool.AddTransactionsUpdated(1);
+
+    if(UseUtreexo()) {
+        GlobalUtreexo().Commit();
+    }
 
     StopHTTPRPC();
     StopREST();
@@ -410,6 +415,10 @@ void SetupServerArgs()
     hidden_args.emplace_back("-sysperms");
 #endif
     gArgs.AddArg("-txindex", strprintf("Maintain a full transaction index, used by the getrawtransaction rpc call (default: %u)", DEFAULT_TXINDEX), false, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-utreexobridge", strprintf("Runs as Utreexo Bridge node, able to serve nodes using Utreexo Compact State (default: %u)", DEFAULT_UTREEXO_BRIDGE), false, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-utreexocompact", strprintf("Stores the UTXO set as Utreexo Compact State (default: %u)", DEFAULT_UTREEXO_COMPACT), false, OptionsCategory::OPTIONS);
+    gArgs.AddArg("-reindexutreexo", strprintf("Reindex Utreexo from the block data"), false, OptionsCategory::OPTIONS);
+
     gArgs.AddArg("-blockfilterindex=<type>",
                  strprintf("Maintain an index of compact filters by block (default: %s, values: %s).", DEFAULT_BLOCKFILTERINDEX, ListBlockFilterTypes()) +
                  " If <type> is not supplied or if <type> = 1, indexes for all known types are enabled.",
@@ -1486,6 +1495,9 @@ bool AppInitMain(InitInterfaces& interfaces)
     LogPrintf("* Using %.1f MiB for chain state database\n", nCoinDBCache * (1.0 / 1024 / 1024));
     LogPrintf("* Using %.1f MiB for in-memory UTXO set (plus up to %.1f MiB of unused mempool space)\n", nCoinCacheUsage * (1.0 / 1024 / 1024), nMempoolSizeMax * (1.0 / 1024 / 1024));
 
+    bool fReindexUtreexo = gArgs.GetBoolArg("-reindexutreexo", false);
+    InitUtreexo(fReindex || fReindexUtreexo);
+
     bool fLoaded = false;
     while (!fLoaded && !ShutdownRequested()) {
         bool fReset = fReindex;
@@ -1656,6 +1668,10 @@ bool AppInitMain(InitInterfaces& interfaces)
     if (ShutdownRequested()) {
         LogPrintf("Shutdown requested. Exiting.\n");
         return false;
+    }
+
+    if(UseUtreexo() && fReindexUtreexo) {
+        GlobalUtreexo().Reindex();
     }
 
     fs::path est_path = GetDataDir() / FEE_ESTIMATES_FILENAME;
