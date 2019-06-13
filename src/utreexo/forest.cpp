@@ -46,7 +46,7 @@ void UtreexoForest::loadFromLocation(fs::path location) {
 
 	// Find the first non-zero leaf from the back
     numLeaves = (1<<height);
-	while(getNode(numLeaves-1).IsNull()) {
+	while(numLeaves > 0 && getNode(numLeaves-1).IsNull()) {
 		numLeaves--;
 	}
 
@@ -104,10 +104,9 @@ void UtreexoForest::resize(uint64_t newSize) {
 	uint64_t appendSize = newSize*32 - curSize*32;
 	LogPrintf("Current size is %d nodes, desired size %d nodes - Appending %d bytes\n", curSize, newSize, appendSize);
 	uint64_t appended = 0;
-	const char zero[4096] = { 0 };
+	const char zero[32768] = { 0 };
 	while(appended < appendSize) {
-		int written = fwrite(zero, 1, std::min(appendSize-appended, (uint64_t)4096), forestFile);
-		LogPrintf("Written %d\n", written);
+		int written = fwrite(zero, 1, std::min(appendSize-appended, (uint64_t)32768), forestFile);
 		if(written == 0) {
 			throw std::runtime_error(strprintf("%s: can't expand forest file", std::string(__func__)));
 		}
