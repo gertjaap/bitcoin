@@ -17,8 +17,8 @@ public:
     void ProveTx(const CTransaction& tx);
     void ProveBlock(const CBlock& block);
     void Reindex();
-    void Load();
     void Commit();
+    void Empty();
 private:
     std::unique_ptr<UtreexoForest> forest;
 };

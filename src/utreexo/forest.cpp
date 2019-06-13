@@ -13,11 +13,50 @@
 #include <fs.h>
 #include <util/system.h>
 
-UtreexoForest::UtreexoForest() : forest(1, uint256()) {
-    positionMap = {};
+
+UtreexoForest::UtreexoForest(fs::path location) {
+	forestLocation = location;
+	loadFromLocation(location);
+}
+
+void UtreexoForest::loadFromLocation(fs::path location) {
+	if(fs::exists(location)) {
+		LogPrintf("Forest file %s exists, opening\n",location.string());
+		forestFile = fsbridge::fopen(location, "r+b");
+	} else {
+		LogPrintf("Forest file %s does not exist, creating\n",location.string());
+		forestFile = fsbridge::fopen(location, "w+b");
+	}
+	if(size() == 0) {
+		resize(1);		
+	}
+	
+	forest = std::unique_ptr<CAutoFile>(new CAutoFile(forestFile, SER_DISK, CLIENT_VERSION));
+	positionMap = {};
     dirtyMap = {};
+
+	fseek(forestFile, 0, SEEK_END);
+	uint64_t fileSize = ftell(forestFile)/32;
+	uint64_t testSize = 1;
     height = 0;
-    numLeaves = 0;
+	while(testSize < fileSize) {
+		height++;
+		testSize += (1 << height);
+	}
+
+	// Find the first non-zero leaf from the back
+    numLeaves = (1<<height);
+	while(getNode(numLeaves-1).IsNull()) {
+		numLeaves--;
+	}
+
+	PrintStats();
+}
+
+void UtreexoForest::Empty() {
+	Commit();
+	fs::remove(forestLocation);
+	loadFromLocation(forestLocation);
 }
 
 void UtreexoForest::Modify(const std::vector<uint256> adds, const std::vector<uint256> deletes) {
@@ -35,83 +74,52 @@ void UtreexoForest::Modify(const std::vector<uint256> adds, const std::vector<ui
 	//printStats();
 }
 
-void UtreexoForest::printStats() {
-    LogPrintf("Forest size: %d - Num Leaves: %d - Roots:\n", forest.size(), numLeaves);
+uint256 UtreexoForest::getNode(uint64_t index) {
+	fseek(forestFile, (index * 32), SEEK_SET);
+	uint256 returnValue;
+	(*forest) >> returnValue;
+	return returnValue;
+}
+
+void UtreexoForest::setNode(uint64_t index, uint256 value) {
+	fseek(forestFile, (index * 32), SEEK_SET);
+	(*forest) << value;
+}
+
+uint64_t UtreexoForest::size() {
+	fseek(forestFile, 0, SEEK_END);
+	return ftell(forestFile)/32;
+}
+
+void UtreexoForest::PrintStats() {
+    LogPrintf("Forest size: %d - Num Leaves: %d - Roots:\n", size(), numLeaves);
     auto tops = UtreexoUtil::GetTops(numLeaves, height);
     for(uint i = 0; i < tops.topIndices.size(); i++) {
-        LogPrintf("Tree [%d] - Height [%d] - Root [%s]\n", i, tops.treeHeights[i], forest[tops.topIndices[i]].GetHex());
+        LogPrintf("Tree [%d] - Height [%d] - Root [%s]\n", i, tops.treeHeights[i], getNode(tops.topIndices[i]).GetHex());
     }
-
 }
 
-void UtreexoForest::Commit(fs::path toDir, std::string filePrefix) {
-    LOCK(cs_forest);
-
-    unsigned short randv = 0;
-    GetRandBytes((unsigned char*)&randv, sizeof(randv));
-
-    // open temp output file, and associate with CAutoFile
-    fs::path pathTmp = toDir / strprintf("%s.%04x.tmp", filePrefix, randv);
-    fs::path targetPath = toDir / strprintf("%s.dat", filePrefix);
-
-    FILE *f = fsbridge::fopen(pathTmp.c_str(),"wb");
-    CAutoFile fileout(f, SER_DISK, CLIENT_VERSION);
-    for(uint i = 0; i < numLeaves; i++) {
-        fileout << forest[i];
-    }
-    
-    FileCommit(f);
-    fileout.fclose();
-    if (!RenameOver(pathTmp, targetPath))
-        throw std::runtime_error(strprintf("%s: Rename-into-place failed", __func__));
-}
-
-void UtreexoForest::Load(fs::path fromDir, std::string filePrefix) {
-    LOCK(cs_forest);
-
-    fs::path fromPath = fromDir / strprintf("%s.dat", filePrefix);
-    if(!fs::exists(fromPath)) return;
-
-    LogPrintf("Loading Utreexo from %s\n", fromPath.string());
-
-    FILE *f = fsbridge::fopen(fromPath.c_str(),"rb");
-    CAutoFile filein(f, SER_DISK, CLIENT_VERSION);
-    
-    fseek(f,0,SEEK_END);
-
-    LogPrintf("Utreexo is %d bytes\n", ftell(f));
-
-    numLeaves = (ftell(f)/32);
-    if(numLeaves == 0) {
-        forest.resize(1);
-        return;
-    }
-    forest.resize(numLeaves);
-
-    LogPrintf("Num leaves is %d\n", numLeaves);
-
-    fseek(f,0,SEEK_SET);
-    
-    for(uint i = 0; i < forest.size(); i++) {
-        filein >> forest[i];
-        dirtyMap[i] = true;
-        positionMap[forest[i]] = i;
-    }
-
-    uint64_t neededForestSize = 1;
-    while (numLeaves > (uint64_t)(1<<height)) {
-        height++;
-        neededForestSize += (1 << height);
-        if(forest.size() < neededForestSize) {
-            LogPrintf("Resizing forest to %d\n", neededForestSize);
-            forest.resize(neededForestSize);
-        }
+void UtreexoForest::resize(uint64_t newSize) {
+	uint64_t curSize = size();
+	uint64_t appendSize = newSize*32 - curSize*32;
+	LogPrintf("Current size is %d nodes, desired size %d nodes - Appending %d bytes\n", curSize, newSize, appendSize);
+	uint64_t appended = 0;
+	const char zero[4096] = { 0 };
+	while(appended < appendSize) {
+		int written = fwrite(zero, 1, std::min(appendSize-appended, (uint64_t)4096), forestFile);
+		LogPrintf("Written %d\n", written);
+		if(written == 0) {
+			throw std::runtime_error(strprintf("%s: can't expand forest file", std::string(__func__)));
+		}
+		appended += written;
 	}
+	fseek(forestFile, newSize*32, SEEK_SET);
+	TruncateFile(forestFile, newSize*32);
+}
 
-    filein.fclose();
-
-    reHash();
-    //printStats();
+void UtreexoForest::Commit() {
+    FileCommit(forestFile);
+    forest->fclose();
 }
 
 void UtreexoForest::reMap(uint8_t newHeight) {
@@ -126,15 +134,15 @@ void UtreexoForest::reMap(uint8_t newHeight) {
     if(newHeight < height) {
         throw std::runtime_error(strprintf("%s: height reduction not implemented", std::string(__func__)));
     }
-    forest.resize(forest.size() + (1 << newHeight));
+    resize(size() + (1 << newHeight));
     uint64_t pos = 1 << newHeight;  // Leftmost position of row 1
     uint64_t reach = pos >> 1;      // How much to next row up
     
     for(uint8_t h = 1; h < newHeight; h++) {
         uint64_t runLength = reach >> 1;
         for(uint64_t x = 0; x < runLength; x++) {
-            if (forest.size() > (pos>>1)+x && !forest[(pos>>1)+x].IsNull()) {
-                forest[pos+x] = forest[(pos>>1)+x];
+            if (size() > (pos>>1)+x && !getNode((pos>>1)+x).IsNull()) {
+                setNode(pos+x, getNode((pos>>1)+x));
             }
             if(dirtyMap[(pos>>1)+x]) {
                 dirtyMap[pos+x] = true;
@@ -145,7 +153,6 @@ void UtreexoForest::reMap(uint8_t newHeight) {
     }
 
     for(uint64_t x = 1 << height; x < (uint64_t)(1<<newHeight); x++) {   
-		forest[x] = uint256();
 		dirtyMap.erase(x);
 	}
     
@@ -206,8 +213,8 @@ void UtreexoForest::reHash() {
             uint64_t left = right ^ 1;
             uint64_t parent = UtreexoUtil::Up1(left, height);
             CHashWriter ss(SER_GETHASH, PROTOCOL_VERSION);
-            ss << forest[left] << forest[right];
-            forest[parent] = ss.GetHash();
+            ss << getNode(left) << getNode(right);
+            setNode(parent, ss.GetHash());
             nextRow.push_back(parent);
         }
         if(tops.treeHeights[0] == h) {
@@ -223,7 +230,7 @@ void UtreexoForest::reHash() {
 
 void UtreexoForest::addInternal(const std::vector<uint256> adds) {
     for (uint256 add : adds) {
-		forest[numLeaves] = add;
+		setNode(numLeaves,add);
         positionMap[add] = numLeaves;
         dirtyMap[numLeaves] = true;
         numLeaves++;
@@ -308,7 +315,7 @@ void UtreexoForest::deleteInternal(const std::vector<uint256> dels) {
 		// everywhere else you delete, there should probably be a ^1
 		// except no, there's places where you move subtrees around & delete em
         for(uint64_t d : deletePositions) {
-			forest[d] = uint256();
+			setNode(d, uint256());
 		}
 		
         // check for root deletion (it can only be the last one)
@@ -403,7 +410,7 @@ void UtreexoForest::deleteInternal(const std::vector<uint256> dels) {
 
 void UtreexoForest::writeSubtree(UtreexoRootStash rootStash, uint64_t dest) {
 	uint8_t subheight = UtreexoUtil::DetectHeight(dest, height);
-	if(rootStash.values.size() != ((2<<subheight)-1)) {
+	if(rootStash.values.size() != (uint)((2<<subheight)-1)) {
 		throw std::runtime_error(strprintf("%s: height %d but %d nodes in arg subtree (need %d)", __func__, subheight, rootStash.values.size(), (2<<subheight)-1));
 	}
 
@@ -411,8 +418,8 @@ void UtreexoForest::writeSubtree(UtreexoRootStash rootStash, uint64_t dest) {
 	// tos start at the bottom and move up, standard
     for(uint64_t i = 0; i < moves.size(); i++) {
 		UtreexoMove m = moves[i];
-        forest[m.to] = rootStash.values[i];
-		if(i < (1 << subheight)) { // we're on the bottom row
+        setNode(m.to,rootStash.values[i]);
+		if(i < (uint64_t)(1 << subheight)) { // we're on the bottom row
 			positionMap[rootStash.values[i]] = m.to;
 		}
 		if(rootStash.dirties.size() > 0 && rootStash.dirties[0] == i) {
@@ -445,7 +452,7 @@ UtreexoRootPhaseResult UtreexoForest::rootPhase(bool haveDel, bool haveRoot, uin
 		// root is present, move root to occupy the rightmost gap
 
 		//		_, ok := f.forestMap[rootPos]
-		if(forest[rootPos].IsNull()) {
+		if(getNode(rootPos).IsNull()) {
 			throw std::runtime_error(strprintf("%s: move from %d but empty", __func__, rootPos));
 		}
 
@@ -462,7 +469,7 @@ UtreexoRootPhaseResult UtreexoForest::rootPhase(bool haveDel, bool haveRoot, uin
 		return result;
 	}
 
-	uint64_t stashPos;
+	uint64_t stashPos = 0;
 
 	// these are redundant, could just do if haveRoot / else here but helps to see
 	// what's going on
@@ -504,8 +511,8 @@ UtreexoRootPhaseResult UtreexoForest::rootPhase(bool haveDel, bool haveRoot, uin
 // deletes the subtree after reading it if del is true
 UtreexoRootStash UtreexoForest::getSubTree(uint64_t src, bool del) {
 
-	if(src >= forest.size() || forest[src].IsNull()) {
-		throw std::runtime_error(strprintf("%s: subtree %d not in forest - out-of-bounds: %b - is null: %b", __func__, src, src >= forest.size(), forest[src].IsNull()));
+	if(src >= size() || getNode(src).IsNull()) {
+		throw std::runtime_error(strprintf("%s: subtree %d not in forest", __func__, src));
 	}
 
 	UtreexoRootStash stash {{},{},{}};
@@ -516,9 +523,9 @@ UtreexoRootStash UtreexoForest::getSubTree(uint64_t src, bool del) {
 	stash.values.resize(moves.size());
 
 	// read from map and build slice in down to up order
-	for(int i = 0; i < moves.size(); i++) {
+	for(uint i = 0; i < moves.size(); i++) {
         UtreexoMove m = moves[i];
-		stash.values[i] = forest[m.from];
+		stash.values[i] = getNode(m.from);
 		// node that the dirty positions are appended IN ORDER.
 		// we can use that and don't have to sort through when we're
 		// re-writing the dirtiness back
@@ -530,7 +537,7 @@ UtreexoRootStash UtreexoForest::getSubTree(uint64_t src, bool del) {
 		}
 
 		if(del){
-			forest[m.from] = uint256();
+			setNode(m.from, uint256());
 		}
 	}
 
@@ -552,15 +559,16 @@ void UtreexoForest::moveSubtree(uint64_t from, uint64_t to) {
 	for(uint i = 0; i < moves.size(); i++) {
         UtreexoMove m = moves[i];
 
-		if(forest[m.from].IsNull()) {
+		if(getNode(m.from).IsNull()) {
 			throw std::runtime_error(strprintf("%s: move from %d but empty", __func__, from));
 		}
-		forest[m.to] = forest[m.from];
+		uint256 fromNode = getNode(m.from);
+		setNode(m.to,fromNode);
 
-		if (i < (1 << toHeight)) { // we're on the bottom row
-			positionMap[forest[m.to]] = m.to;
+		if (i < (uint)(1 << toHeight)) { // we're on the bottom row
+			positionMap[fromNode] = m.to;
 		}
-		forest[m.from] = uint256();
+		setNode(m.from,uint256());
 		
 		if(dirtyMap[m.from]) {
 			dirtyMap[m.to] = true;

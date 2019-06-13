@@ -13,7 +13,7 @@
 #include <sstream>
 
 Utreexo::Utreexo() {
-    forest = std::unique_ptr<UtreexoForest>(new UtreexoForest());
+    forest = std::unique_ptr<UtreexoForest>(new UtreexoForest(GetDataDir() / "utreexo.dat"));
 }
 
 void Utreexo::ProcessBlock(const CBlock& block) {
@@ -60,6 +60,7 @@ void Utreexo::Reindex() {
         if (GetSystemTimeInSeconds() >= nNow + 5) {
             nNow = GetSystemTimeInSeconds();
             LogPrintf("Rebuilding Utreexo. At block %d. Progress=%f\n", *block_height, progress);
+            forest->PrintStats();
         }
 
         CBlock block;
@@ -88,12 +89,11 @@ void Utreexo::Reindex() {
 
 void Utreexo::Commit() {
     LogPrintf("Committing Utreexo\n");
-    forest->Commit(GetDataDir(),"utreexo");
+    forest->Commit();
 }
 
-void Utreexo::Load() {
-    LogPrintf("Loading Utreexo\n");
-    forest->Load(GetDataDir(),"utreexo");
+void Utreexo::Empty() {
+    forest->Empty();
 }
 
 static std::unique_ptr<Utreexo> m_global_utreexo;
@@ -108,8 +108,8 @@ void InitUtreexo(bool fReindex)
 {
     if(UseUtreexo()) {
         m_global_utreexo = std::unique_ptr<Utreexo>(new Utreexo());
-        if(!fReindex) {
-            m_global_utreexo->Load();
+        if(fReindex) {
+            m_global_utreexo->Empty();
         }
     }
 }
