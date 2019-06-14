@@ -46,8 +46,15 @@ void UtreexoForest::loadFromLocation(fs::path location) {
 
 	// Find the first non-zero leaf from the back
     numLeaves = (1<<height);
-	while(numLeaves > 0 && getNode(numLeaves-1).IsNull()) {
+	uint256 n = uint256();
+	while(numLeaves > 0 && n.IsNull()) {
 		numLeaves--;
+		n = getNode(numLeaves);
+	}
+	if(!n.IsNull()) numLeaves++;
+
+	for(int i = 0; i < (int)numLeaves; i++) {
+		positionMap[getNode(i)] = i;
 	}
 
 	PrintStats();
@@ -152,6 +159,7 @@ void UtreexoForest::reMap(uint8_t newHeight) {
     }
 
     for(uint64_t x = 1 << height; x < (uint64_t)(1<<newHeight); x++) {   
+		setNode(x, uint256());
 		dirtyMap.erase(x);
 	}
     

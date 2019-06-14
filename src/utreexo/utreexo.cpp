@@ -85,6 +85,9 @@ void Utreexo::Reindex() {
             progress = chain->guessVerificationProgress(block_hash);
         }
     }
+
+    LogPrintf("Rebuilt Utreexo:\n");
+    forest->PrintStats();
 }
 
 void Utreexo::Commit() {
