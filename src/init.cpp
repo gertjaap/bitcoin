@@ -1671,7 +1671,7 @@ bool AppInitMain(InitInterfaces& interfaces)
     }
 
     if(UseUtreexo() && fReindexUtreexo) {
-        GlobalUtreexo().Reindex();
+        GlobalUtreexo().Reindex(uint256());
     }
 
     fs::path est_path = GetDataDir() / FEE_ESTIMATES_FILENAME;

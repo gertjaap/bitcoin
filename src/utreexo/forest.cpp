@@ -19,6 +19,14 @@ UtreexoForest::UtreexoForest(fs::path location) {
 	loadFromLocation(location);
 }
 
+bool UtreexoForest::IsReindexing() {
+	return metadata.reindexing;
+}
+
+uint256 UtreexoForest::CurrentHash() {
+	return metadata.blockHash;
+}
+
 void UtreexoForest::loadFromLocation(fs::path location) {
 	if(fs::exists(location)) {
 		LogPrintf("Forest file %s exists, opening\n",location.string());
@@ -27,36 +35,36 @@ void UtreexoForest::loadFromLocation(fs::path location) {
 		LogPrintf("Forest file %s does not exist, creating\n",location.string());
 		forestFile = fsbridge::fopen(location, "w+b");
 	}
+	
+	forest = std::unique_ptr<CAutoFile>(new CAutoFile(forestFile, SER_DISK, CLIENT_VERSION));
+	
 	if(size() == 0) {
+		metadata.blockHash = uint256();
+		metadata.reindexing = false;
+		numLeaves = 0;
+		LogPrintf("Writing default metadata to empty file");
+		saveMetadata();
 		resize(1);		
 	}
 	
-	forest = std::unique_ptr<CAutoFile>(new CAutoFile(forestFile, SER_DISK, CLIENT_VERSION));
 	positionMap = {};
     dirtyMap = {};
 
 	fseek(forestFile, 0, SEEK_END);
-	uint64_t fileSize = ftell(forestFile)/32;
-	uint64_t testSize = 1;
+	uint64_t byteSize = ftell(forestFile);
+	uint64_t fileSize = (byteSize-UTREEXO_METADATA_SIZE)/32;
+	uint64_t testSize = UTREEXO_METADATA_SIZE + 1;
     height = 0;
 	while(testSize < fileSize) {
 		height++;
 		testSize += (1 << height);
 	}
-
-	// Find the first non-zero leaf from the back
-    numLeaves = (1<<height);
-	uint256 n = uint256();
-	while(numLeaves > 0 && n.IsNull()) {
-		numLeaves--;
-		n = getNode(numLeaves);
+	if(byteSize > UTREEXO_METADATA_SIZE) {
+		loadMetadata();
 	}
-	if(!n.IsNull()) numLeaves++;
-
 	for(int i = 0; i < (int)numLeaves; i++) {
 		positionMap[getNode(i)] = i;
 	}
-
 	PrintStats();
 }
 
@@ -66,10 +74,13 @@ void UtreexoForest::Empty() {
 	loadFromLocation(forestLocation);
 }
 
-void UtreexoForest::Modify(const std::vector<uint256> adds, const std::vector<uint256> deletes) {
+void UtreexoForest::Modify(const std::vector<uint256> adds, const std::vector<uint256> deletes, uint256 hashPrevBlock, uint256 hashBlock) {
     int64_t delta = adds.size() - deletes.size();
 
-    LOCK(cs_forest);
+	if(hashPrevBlock.Compare(metadata.blockHash) != 0) {
+		throw std::runtime_error(strprintf("%s: utreexo is on block %s but Modify was called for %s", std::string(__func__), metadata.blockHash.GetHex(), hashPrevBlock.GetHex()));
+	}
+
 	// remap to expand the forest if needed
 	while (numLeaves+delta > (uint64_t)(1<<height)) {
         reMap(height + 1);
@@ -78,24 +89,46 @@ void UtreexoForest::Modify(const std::vector<uint256> adds, const std::vector<ui
     deleteInternal(deletes);
     addInternal(adds);
     reHash();
+	metadata.blockHash = hashBlock;
+	saveMetadata();
 	//printStats();
 }
 
 uint256 UtreexoForest::getNode(uint64_t index) {
-	fseek(forestFile, (index * 32), SEEK_SET);
+	LOCK(cs_forest);
+	fseek(forestFile, UTREEXO_METADATA_SIZE + (index * 32), SEEK_SET);
 	uint256 returnValue;
 	(*forest) >> returnValue;
 	return returnValue;
 }
 
 void UtreexoForest::setNode(uint64_t index, uint256 value) {
-	fseek(forestFile, (index * 32), SEEK_SET);
+	LOCK(cs_forest);
+	fseek(forestFile, UTREEXO_METADATA_SIZE + (index * 32), SEEK_SET);
 	(*forest) << value;
+}
+
+void UtreexoForest::saveMetadata() {
+	fseek(forestFile, 0, SEEK_SET);
+	(*forest) << metadata.blockHash;
+	(*forest) << numLeaves;
+	(*forest) << metadata.reindexing;
+}
+
+void UtreexoForest::loadMetadata() {
+	fseek(forestFile, 0, SEEK_SET);
+	(*forest) >> metadata.blockHash;
+	(*forest) >> numLeaves;
+	(*forest) >> metadata.reindexing;
 }
 
 uint64_t UtreexoForest::size() {
 	fseek(forestFile, 0, SEEK_END);
-	return ftell(forestFile)/32;
+	uint64_t byteSize = ftell(forestFile);
+	if(byteSize < UTREEXO_METADATA_SIZE) {
+		return 0;
+	}
+	return (ftell(forestFile)-UTREEXO_METADATA_SIZE)/32;
 }
 
 void UtreexoForest::PrintStats() {
@@ -107,20 +140,24 @@ void UtreexoForest::PrintStats() {
 }
 
 void UtreexoForest::resize(uint64_t newSize) {
-	uint64_t curSize = size();
+	uint64_t curSize = size(); // This will also seek to the end!
 	uint64_t appendSize = newSize*32 - curSize*32;
 	LogPrintf("Current size is %d nodes, desired size %d nodes - Appending %d bytes\n", curSize, newSize, appendSize);
 	uint64_t appended = 0;
 	const char zero[32768] = { 0 };
-	while(appended < appendSize) {
-		int written = fwrite(zero, 1, std::min(appendSize-appended, (uint64_t)32768), forestFile);
-		if(written == 0) {
-			throw std::runtime_error(strprintf("%s: can't expand forest file", std::string(__func__)));
+	{
+		LOCK(cs_forest);
+		while(appended < appendSize) {
+			uint64_t sizeToAppend = std::min(appendSize-appended, (uint64_t)32768);
+			int written = fwrite(zero, sizeToAppend, 1, forestFile);
+			if(written == 0) {
+				throw std::runtime_error(strprintf("%s: can't expand forest file", std::string(__func__)));
+			}
+			appended += sizeToAppend;
 		}
-		appended += written;
+		fseek(forestFile, UTREEXO_METADATA_SIZE + newSize*32, SEEK_SET);
+		TruncateFile(forestFile, UTREEXO_METADATA_SIZE + newSize*32);
 	}
-	fseek(forestFile, newSize*32, SEEK_SET);
-	TruncateFile(forestFile, newSize*32);
 }
 
 void UtreexoForest::Commit() {

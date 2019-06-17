@@ -40,10 +40,10 @@ void Utreexo::ProcessBlock(const CBlock& block) {
             }
         }
     }
-    forest->Modify(adds, dels);
+    forest->Modify(adds, dels, block.hashPrevBlock, block.GetHash());
 }
 
-void Utreexo::Reindex() {
+void Utreexo::Reindex(uint256 afterBlock) {
     std::unique_ptr<interfaces::Chain> chain = interfaces::MakeChain(); 
     
     uint256 block_hash = uint256();
@@ -51,8 +51,15 @@ void Utreexo::Reindex() {
     Optional<int> block_height;
     {
         auto locked_chain = chain->lock();
-        block_hash = locked_chain->getBlockHash(0);
-        block_height = locked_chain->getBlockHeight(block_hash);
+        if(afterBlock.IsNull()) {
+            block_hash = locked_chain->getBlockHash(0);
+            block_height = locked_chain->getBlockHeight(block_hash);
+        } else {
+            block_height = locked_chain->getBlockHeight(afterBlock);
+            block_hash = locked_chain->getBlockHash(++*block_height);
+        }
+        
+        
     }
     int64_t nNow = GetSystemTimeInSeconds();
 
@@ -99,6 +106,12 @@ void Utreexo::Empty() {
     forest->Empty();
 }
 
+void Utreexo::ResumeReindexing() {
+    if(forest->IsReindexing()) {
+        Reindex(forest->CurrentHash());
+    }
+}
+
 static std::unique_ptr<Utreexo> m_global_utreexo;
 static int m_use_utreexo = -1;
 
@@ -113,6 +126,8 @@ void InitUtreexo(bool fReindex)
         m_global_utreexo = std::unique_ptr<Utreexo>(new Utreexo());
         if(fReindex) {
             m_global_utreexo->Empty();
+        } else {
+            m_global_utreexo->ResumeReindexing();
         }
     }
 }

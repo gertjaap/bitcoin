@@ -20,11 +20,20 @@ struct UtreexoRootPhaseResult {
     UtreexoRootStash rootStash;
 };
 
+struct UtreexoMetaData {
+    uint256 blockHash;
+    uint64_t numLeaves;
+    bool reindexing;
+};
+
+#define UTREEXO_METADATA_SIZE 512 // leaves room for future expansion
 
 class UtreexoForest {
 public:
     UtreexoForest(fs::path location);
-    void Modify(const std::vector<uint256> adds, const std::vector<uint256> deletes);
+    void Modify(const std::vector<uint256> adds, const std::vector<uint256> deletes, uint256 hashPrevBlock, uint256 hashBlock);
+    bool IsReindexing();
+    uint256 CurrentHash();
     void Commit();
     void Empty();
     void PrintStats();
@@ -39,6 +48,8 @@ private:
     void reHash();
     void resize(uint64_t newSize);
     void loadFromLocation(fs::path location);
+    void saveMetadata();
+    void loadMetadata();
     uint64_t size();
     uint256 getNode(uint64_t index);
     void setNode(uint64_t index, uint256 value);
@@ -48,6 +59,7 @@ private:
     FILE* forestFile;
     std::map<uint256, uint64_t> positionMap;
     std::map<uint64_t, bool> dirtyMap;
+    UtreexoMetaData metadata;
     CCriticalSection cs_forest;
     fs::path forestLocation;
 };

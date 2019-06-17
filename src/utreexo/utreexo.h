@@ -16,9 +16,10 @@ public:
     void ProcessBlock(const CBlock& block);
     void ProveTx(const CTransaction& tx);
     void ProveBlock(const CBlock& block);
-    void Reindex();
+    void Reindex(uint256 afterBlock);
     void Commit();
-    void Empty();
+    void Empty(); 
+    void ResumeReindexing();
 private:
     std::unique_ptr<UtreexoForest> forest;
 };
